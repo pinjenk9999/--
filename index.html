@@ -57,7 +57,6 @@ input[type="number"] {
 select {
     cursor: pointer;
 }
-/* 自定義檔案上傳按鈕 */
 .file-upload {
     position: relative;
     display: inline-block;
@@ -117,7 +116,6 @@ button:hover {
     user-select: none;
     -webkit-user-drag: none;
 }
-/* 圓形紅底白字標籤，比照範例圖設計，完美防止重疊時看不清 */
 .marker {
     position: absolute;
     transform: translate(-50%, -50%);
@@ -141,18 +139,27 @@ button:hover {
     transform: translate(-50%, -50%) scale(1.1);
     background-color: #d32f2f;
 }
-#line {
+/* SVG 畫布：用來動態顯示滑鼠畫出的精準曲線路徑 */
+#svg-canvas {
     position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
     pointer-events: none;
-    border-top: 2px dashed #00aaff;
-    display: none;
     z-index: 40;
+}
+#trace-path {
+    fill: none;
+    stroke: #00aaff;
+    stroke-width: 2;
+    stroke-dasharray: 5, 5;
 }
 </style>
 </head>
 <body>
 <div id="bar">
-    <div class="brand">圖片自動編號工具</div>
+    <div class="brand">圖片自由軌跡自動編號工具</div>
     
     <div class="file-upload">
         <span>選擇圖片</span>
@@ -163,7 +170,7 @@ button:hover {
         <label for="mode">模式</label>
         <select id="mode">
             <option value="click">單點點擊</option>
-            <option value="line">畫線平均分散</option>
+            <option value="line">滑鼠軌跡平均分散</option>
         </select>
     </div>
 
@@ -173,7 +180,7 @@ button:hover {
     </div>
 
     <div class="control-group">
-        <label for="count">劃線數量</label>
+        <label for="count">標示數量</label>
         <input id="count" type="number" value="10" min="1">
     </div>
 
@@ -183,7 +190,9 @@ button:hover {
 
 <div id="wrap">
     <img id="img" alt="請先上傳圖片">
-    <div id="line"></div>
+    <svg id="svg-canvas">
+        <path id="trace-path" d=""></path>
+    </svg>
 </div>
 
 <script>
@@ -193,15 +202,15 @@ const upload = document.getElementById('upload');
 const mode = document.getElementById('mode');
 const start = document.getElementById('start');
 const count = document.getElementById('count');
-const line = document.getElementById('line');
+const tracePath = document.getElementById('trace-path');
 const undo = document.getElementById('undo');
 const clear = document.getElementById('clear');
 
 let n = 1;
 let stack = [];
 let drag = null;
-let sx = 0, sy = 0;
-let isDrawingLine = false;
+let isDrawingTrace = false;
+let mousePoints = []; // 用來記錄滑鼠劃過的所有座標點
 
 // 上傳圖片處理
 upload.onchange = e => {
@@ -241,23 +250,22 @@ wrap.onclick = e => {
     add(e.clientX - r.left, e.clientY - r.top, n++);
 };
 
-// 滑鼠按下：準備劃線
+// 滑鼠按下：開始記錄自由軌跡
 wrap.onmousedown = e => {
     if (mode.value !== "line" || e.target !== img) return;
-    isDrawingLine = true;
-    const r = wrap.getBoundingClientRect();
-    sx = e.clientX - r.left;
-    sy = e.clientY - r.top;
+    isDrawingTrace = true;
+    mousePoints = []; // 清空上一次的點
     
-    line.style.display = "block";
-    line.style.left = sx + "px";
-    line.style.top = sy + "px";
-    line.style.width = "0px";
-    line.style.transform = "none";
+    const r = wrap.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    
+    mousePoints.push({x, y});
+    tracePath.setAttribute('d', `M ${x} ${y}`);
     e.preventDefault();
 };
 
-// 滑鼠移動：更新線段與拖曳標籤
+// 滑鼠移動：動態繪製滑鼠走過的任意路徑
 window.onmousemove = e => {
     const r = wrap.getBoundingClientRect();
     
@@ -265,7 +273,6 @@ window.onmousemove = e => {
     if (drag) {
         let x = e.clientX - r.left;
         let y = e.clientY - r.top;
-        // 限制在畫布內防止拖出邊界
         x = Math.max(0, Math.min(x, r.width));
         y = Math.max(0, Math.min(y, r.height));
         drag.style.left = x + "px";
@@ -273,36 +280,64 @@ window.onmousemove = e => {
         return;
     }
     
-    // 處理劃線預覽
-    if (mode.value !== "line" || !isDrawingLine) return;
-    const ex = e.clientX - r.left;
-    const ey = e.clientY - r.top;
-    const dx = ex - sx;
-    const dy = ey - sy;
-    const len = Math.hypot(dx, dy);
+    // 處理軌跡預覽
+    if (mode.value !== "line" || !isDrawingTrace) return;
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
     
-    line.style.width = len + "px";
-    line.style.transform = `translateY(-1px) rotate(${Math.atan2(dy, dx)}rad)`;
+    // 記錄點並更新預覽虛線路徑
+    mousePoints.push({x, y});
+    
+    let pathData = tracePath.getAttribute('d') || '';
+    pathData += ` L ${x} ${y}`;
+    tracePath.setAttribute('d', pathData);
 };
 
-// 滑鼠放開：完成劃線並「均勻分散」數字
+// 滑鼠放開：沿著滑鼠「任意移動軌跡」平均分散數字
 window.onmouseup = e => {
     drag = null;
-    if (mode.value !== "line" || !isDrawingLine) return;
-    isDrawingLine = false;
-    line.style.display = "none";
+    if (mode.value !== "line" || !isDrawingTrace) return;
+    isDrawingTrace = false;
     
-    const r = wrap.getBoundingClientRect();
-    const ex = e.clientX - r.left;
-    const ey = e.clientY - r.top;
+    // 清除預覽虛線
+    tracePath.setAttribute('d', '');
+    
+    if (mousePoints.length < 2) return;
     
     const c = Math.max(1, parseInt(count.value, 10) || 1);
     
-    // 精準直線等分分佈演算法 (從 0% 到 100% 完全均勻平分)
+    // 軌跡等分長度均分演算法
+    // 1. 先計算出整條滑鼠軌跡的總長度，以及每個分段的累加長度
+    let segmentLengths = [0];
+    let totalLength = 0;
+    for (let i = 1; i < mousePoints.length; i++) {
+        let p1 = mousePoints[i-1];
+        let p2 = mousePoints[i];
+        let dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        totalLength += dist;
+        segmentLengths.push(totalLength);
+    }
+    
+    // 2. 根據設定的數量，在總長度上均勻找到對應的點坐標
     for (let i = 0; i < c; i++) {
-        let t = c === 1 ? 0 : i / (c - 1);
-        let posX = sx + (ex - sx) * t;
-        let posY = sy + (ey - sy) * t;
+        let targetLength = c === 1 ? 0 : (i / (c - 1)) * totalLength;
+        
+        // 尋找目標長度在哪個滑鼠記錄點的分段之內
+        let idx = 0;
+        while (idx < segmentLengths.length - 1 && segmentLengths[idx + 1] < targetLength) {
+            idx++;
+        }
+        
+        let p1 = mousePoints[idx];
+        let p2 = mousePoints[idx + 1] || p1;
+        
+        let segLength = segmentLengths[idx + 1] - segmentLengths[idx];
+        let ratio = segLength === 0 ? 0 : (targetLength - segmentLengths[idx]) / segLength;
+        
+        // 內插法計算出精準的弧線點座標
+        let posX = p1.x + (p2.x - p1.x) * ratio;
+        let posY = p1.y + (p2.y - p1.y) * ratio;
+        
         add(posX, posY, n++);
     }
 };
@@ -325,9 +360,9 @@ function clearAll() {
     stack.forEach(x => x.remove());
     stack = [];
     n = parseInt(start.value, 10) || 1;
+    tracePath.setAttribute('d', '');
 }
 
-// 連動起始編號更動
 start.onchange = () => {
     if(stack.length === 0) {
         n = parseInt(start.value, 10) || 1;
